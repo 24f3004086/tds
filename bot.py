@@ -4,11 +4,22 @@ import os
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+from flask import Flask, send_file
+
+app = Flask(__name__)
+
+@app.get("/run.jsonl")
+def run_log():
+    return send_file("run.jsonl", mimetype="application/json")
 
 # --- fill these in with your own values ---
-TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
-AIPIPE_TOKEN = os.environ["AIPIPE_TOKEN"]
-LOG_URL = "PASTE_YOUR_PUBLIC_LOG_URL_HERE"  # see Step 5 — where run.jsonl will be hosted
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+AIPIPE_TOKEN = os.getenv("AIPIPE_TOKEN")
+LOG_URL = os.getenv("LOG_URL")
 # -------------------------------------------
 
 client = OpenAI(base_url="https://aipipe.org/openai/v1", api_key=AIPIPE_TOKEN)
@@ -18,9 +29,8 @@ LOG_FILE = "run.jsonl"
 # "answer the LAST message" still needs the earlier ones for context.
 conversation_history = {}
 
-def log_event(event: dict):
-    event["timestamp"] = time.time()
-    with open(LOG_FILE, "a") as f:
+def log_event(event):
+    with open("run.jsonl", "a") as f:
         f.write(json.dumps(event) + "\n")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -52,17 +62,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # forgot the log_url field or wrapped it in markdown, fix it up here so the grader
     # never sees a malformed reply.
     try:
+        reply_text = response.choices[0].message.content
+
+        print("========== MODEL RESPONSE ==========")
+        print(repr(reply_text))
+        print("====================================")
         parsed = json.loads(reply_text)
     except json.JSONDecodeError:
-        # Model added extra text — try to pull out just the {...} part.
-        start, end = reply_text.find("{"), reply_text.rfind("}")
+        start = reply_text.find("{")
+        end = reply_text.rfind("}")
+
+        if start == -1 or end == -1:
+            raise ValueError("No JSON object found in model response.")
+
         parsed = json.loads(reply_text[start:end + 1])
-    parsed["log_url"] = LOG_URL
-    final_reply = json.dumps(parsed)
+
+    final_response = {
+        "answer": parsed,
+        "log_url": LOG_URL
+    }
+
+    final_reply = json.dumps(final_response)
 
     log_event({"type": "outgoing", "chat_id": chat_id, "text": final_reply})
     await update.message.reply_text(final_reply)
-
+flask_app = Flask(__name__)
 app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 print("Bot is running... (Ctrl+C to stop)")
